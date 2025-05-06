@@ -8,8 +8,15 @@ import ctypes
 import webbrowser
 import pyperclip
 import subprocess
+import os
 import json
+import pyautogui
+import time
+import psutil
+import threading
+from datetime import datetime, timedelta
 
+pyautogui.FAILSAFE = False
 
 class TelegramBot:
 
@@ -18,12 +25,22 @@ class TelegramBot:
         auth = json.load(f)
         self.TOKEN = auth["TOKEN"]
         self.CHAT_ID = auth["CHAT_ID"]
+        self.PC_PASSWORD = auth["PC_PASSWORD"]
+        self.CHECK_IN_FILE = auth["CHECK_IN_FILE"]
+
 
     def start_command(self, update, context):
-        buttons = [[KeyboardButton("⚠ Screen status")], [KeyboardButton("🔒 Lock screen")], [KeyboardButton("📸 Take screenshot")],
-                   [KeyboardButton("✂ Paste clipboard")], [KeyboardButton(
-                       "📄 List process")], [KeyboardButton("💤 Sleep")],
-                   [KeyboardButton("💡 More commands")]]
+        buttons = [[KeyboardButton("⚠ Screen status")], 
+        [KeyboardButton("🔒 Lock screen")], 
+        [KeyboardButton("🔁 Reboot")], 
+        [KeyboardButton("📍 Check in")], 
+        # [KeyboardButton("🔓 Unlock screen")], 
+        [KeyboardButton("📸 Take screenshot")],
+        [KeyboardButton("✂ Paste clipboard")], 
+        [KeyboardButton("📄 List process")], 
+        [KeyboardButton("💤 Sleep")],
+        [KeyboardButton("💡 More commands")]]
+
         context.bot.send_message(
             chat_id=self.CHAT_ID, text="I will do what you command.", reply_markup=ReplyKeyboardMarkup(buttons))
 
@@ -37,6 +54,72 @@ class TelegramBot:
             sct.shot(mon=-1)
         return os.path.join(TEMPDIR, 'monitor-0.png')
 
+    def reboot(self):
+        os.system("shutdown /r /f /t 0") 
+
+    def check_in(self):
+        file = str(self.CHECK_IN_FILE)
+        if os.path.exists(file):
+            try:
+                subprocess.run(file, shell=True, check=True)
+                return "✅ Check in successfully."
+            except subprocess.CalledProcessError as e:
+                return f"❌ Check in failed: {e}"
+        else:
+            return "❌ Check in file not found."
+
+
+    # def unlock_screen(self):
+    # # Since the password is already stored in self.PC_PASSWORD, we can use it directly.
+    #     password = str(self.PC_PASSWORD)
+    #     try:
+    #         pyautogui.press('enter') 
+    #         time.sleep(2)
+    #         print("First enter")
+
+    #         for char in password:
+    #             pyautogui.press(char)
+    #             time.sleep(0.05)  
+
+
+    #         # pyautogui.typewrite(str(password))
+    #         print("After password")
+
+    #         pyautogui.press('enter')
+    #         print("Second enter")
+  
+    #         time.sleep(2)
+    #         # Check if the screen is still locked
+    #         for proc in psutil.process_iter():
+    #             if (proc.name() == "LogonUI.exe"):  # If the process is still running, it means the screen is locked
+    #                 return "Error: Screen is still locked, could not unlock."
+        
+    #         # If LogonUI.exe process is not found, it means the screen is unlocked
+    #         return "Screen unlocked successfully"
+    #     except Exception as e:
+    #         return f"Error while unlocking screen: {str(e)}"
+
+    def schedule_reboot_at(self, hour, minute):
+        def schedule_loop():
+            while True:
+                now = datetime.now()
+                scheduled_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                if scheduled_time < now:
+                    scheduled_time += timedelta(days=1)
+
+                wait_seconds = (scheduled_time - now).total_seconds()
+                print(f"[i] Scheduled reboot in {wait_seconds} seconds at {scheduled_time}")
+                time.sleep(wait_seconds)
+                print("[i] Rebooting now...")
+                self.reboot()
+                # Wait a bit in case reboot fails or is delayed
+                time.sleep(60) 
+
+        thread = threading.Thread(target=schedule_loop, daemon=True)
+        thread.start()
+
+
     def handle_message(self, update, input_text):
         usr_msg = input_text.split()
 
@@ -48,6 +131,10 @@ class TelegramBot:
                 if (proc.name() == "LogonUI.exe"):
                     return 'Screen is Locked'
             return 'Screen is Unlocked'
+        
+        if input_text == 'reboot':
+            self.reboot()
+            return "Sending reboot signal"
 
         if input_text == 'lock screen':
             try:
@@ -55,6 +142,21 @@ class TelegramBot:
                 return "Screen locked successfully"
             except:
                 return "Error while locking screen"
+
+        if input_text == 'check in':
+            try:
+                response = self.check_in()
+                return response
+            except Exception as e:
+                return f"Error while checking in: {str(e)}"
+
+
+        # if input_text == 'unlock screen':
+        #     try:
+        #         response = self.unlock_screen()
+        #         return response
+        #     except Exception as e:
+        #         return f"Error while unlocking screen: {str(e)}"
 
         if input_text == "take screenshot":
             update.message.bot.send_photo(
@@ -136,7 +238,7 @@ class TelegramBot:
     def send_response(self, update, context):
         user_message = update.message.text
         # Please modify this
-        if update.message.chat["username"] != "YOUR_USERNAME":
+        if update.message.chat["username"] != "Hoxnnn":
             print("[!] " + update.message.chat["username"] +
                   ' tried to use this bot')
             context.bot.send_message(
@@ -161,6 +263,10 @@ class TelegramBot:
         dp.add_handler(CommandHandler("start", self.start_command))
         dp.add_handler(MessageHandler(Filters.text, self.send_response))
         dp.add_error_handler(self.error)
+
+        # Start background reboot scheduler at 3:00 AM (change as needed)
+        self.schedule_reboot_at(hour=8, minute=00)
+
         updater.start_polling()
         print("[+] BOT has started")
         updater.idle()
