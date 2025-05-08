@@ -10,13 +10,11 @@ import pyperclip
 import subprocess
 import os
 import json
-import pyautogui
 import time
 import psutil
 import threading
 from datetime import datetime, timedelta
-
-pyautogui.FAILSAFE = False
+from PIL import Image
 
 class TelegramBot:
 
@@ -25,8 +23,14 @@ class TelegramBot:
         auth = json.load(f)
         self.TOKEN = auth["TOKEN"]
         self.CHAT_ID = auth["CHAT_ID"]
-        self.PC_PASSWORD = auth["PC_PASSWORD"]
-        self.CHECK_IN_FILE = auth["CHECK_IN_FILE"]
+        self.USERNAME = auth["USERNAME"]
+
+        # Load all paths
+        with open('check-in-list.json', encoding='utf-8') as f:
+            checkin_list = json.load(f)
+            self.CHECK_IN_DICTIONARY = {
+                entry["name"]: entry["path"] for entry in checkin_list
+            }
 
 
     def start_command(self, update, context):
@@ -48,27 +52,39 @@ class TelegramBot:
         print(f"Update {update} caused error {context.error}")
 
     def take_screenshot(self):
-        TEMPDIR = tempfile.gettempdir()
-        os.chdir(TEMPDIR)
-        with mss() as sct:
-            sct.shot(mon=-1)
-        return os.path.join(TEMPDIR, 'monitor-0.png')
+        try:
+            TEMPDIR = tempfile.gettempdir()
+            file_path = os.path.join(TEMPDIR, 'monitor-all.jpg')
+
+            with mss() as sct:
+                screenshot = sct.grab(sct.monitors[0])  # Capture all monitors
+                img = Image.frombytes('RGB', screenshot.size, screenshot.rgb)
+                img.save(file_path, format='JPEG', quality=70) 
+
+            return file_path
+        except Exception as e:
+            print(f"[!] Screenshot error: {e}")
+            return None
 
     def reboot(self):
         os.system("shutdown /r /f /t 0") 
 
-    def check_in(self):
-        file = str(self.CHECK_IN_FILE)
+    # Run multiple file already defined in self.CHECK_IN_DICTIONARY
+    def check_in(self, name):
+        if name not in self.CHECK_IN_DICTIONARY:
+            return f"❌ No check-in script found for '{name}'"
+           
+        file = self.CHECK_IN_DICTIONARY[name]
         if os.path.exists(file):
             try:
                 subprocess.run(file, shell=True, check=True)
-                return "✅ Check in successfully."
+                return f"Initialized check-in process for '{name}'."
             except subprocess.CalledProcessError as e:
-                return f"❌ Check in failed: {e}"
+                return f"❌ Check-in failed for '{name}': {e}"
         else:
-            return "❌ Check in file not found."
+            return f"❌ Check-in file not found for '{name}'."
 
-
+    # unable to make this work due to windows security blocked programs from being able to unlock windows
     # def unlock_screen(self):
     # # Since the password is already stored in self.PC_PASSWORD, we can use it directly.
     #     password = str(self.PC_PASSWORD)
@@ -99,7 +115,7 @@ class TelegramBot:
     #     except Exception as e:
     #         return f"Error while unlocking screen: {str(e)}"
 
-    def schedule_reboot_at(self, hour, minute):
+    def schedule(self, hour, minute):
         def schedule_loop():
             while True:
                 now = datetime.now()
@@ -120,7 +136,7 @@ class TelegramBot:
         thread.start()
 
 
-    def handle_message(self, update, input_text):
+    def handle_message(self, update, input_text, context):
         usr_msg = input_text.split()
 
         if input_text == "more commands":
@@ -144,12 +160,27 @@ class TelegramBot:
                 return "Error while locking screen"
 
         if input_text == 'check in':
-            try:
-                response = self.check_in()
-                return response
-            except Exception as e:
-                return f"Error while checking in: {str(e)}"
-
+            buttons = [[KeyboardButton(name)] for name in self.CHECK_IN_DICTIONARY.keys()]
+            buttons.append([KeyboardButton("All")])
+            buttons.append([KeyboardButton("Back")])
+            context.bot.send_message(
+                chat_id=self.CHAT_ID,
+                text="Who do you want to check in for?",
+                reply_markup=ReplyKeyboardMarkup(buttons)
+            )
+            return None
+        
+        if input_text in self.CHECK_IN_DICTIONARY:
+            return self.check_in(input_text)
+        
+        if input_text == 'all':
+            results = []
+            for name in self.CHECK_IN_DICTIONARY:
+                results.append(self.check_in(name))
+            return "\n\n".join(results)
+        
+        if input_text == "back":
+            return self.start_command(update, context)
 
         # if input_text == 'unlock screen':
         #     try:
@@ -159,9 +190,12 @@ class TelegramBot:
         #         return f"Error while unlocking screen: {str(e)}"
 
         if input_text == "take screenshot":
-            update.message.bot.send_photo(
-                chat_id=self.CHAT_ID, photo=open(self.take_screenshot(), 'rb'))
-            return None
+            try:
+                update.message.bot.send_photo(
+                    chat_id=self.CHAT_ID, photo=open(self.take_screenshot(), 'rb'))
+                return None
+            except Exception as e:
+                return f"❌ Failed to take screenshot: {e}"
 
         if input_text == "paste clipboard":
             return pyperclip.paste()
@@ -237,8 +271,7 @@ class TelegramBot:
 
     def send_response(self, update, context):
         user_message = update.message.text
-        # Please modify this
-        if update.message.chat["username"] != "Hoxnnn":
+        if update.message.chat["username"] != str(self.USERNAME):
             print("[!] " + update.message.chat["username"] +
                   ' tried to use this bot')
             context.bot.send_message(
@@ -247,7 +280,7 @@ class TelegramBot:
             user_message = user_message.encode(
                 'ascii', 'ignore').decode('ascii').strip(' ')
             user_message = user_message[0].lower() + user_message[1:]
-            response = self.handle_message(update, user_message)
+            response = self.handle_message(update, user_message, context)
             if response:
                 if (len(response) > 4096):
                     for i in range(0, len(response), 4096):
@@ -264,8 +297,8 @@ class TelegramBot:
         dp.add_handler(MessageHandler(Filters.text, self.send_response))
         dp.add_error_handler(self.error)
 
-        # Start background reboot scheduler at 3:00 AM (change as needed)
-        self.schedule_reboot_at(hour=8, minute=00)
+        # Start background scheduler
+        self.schedule(hour=7, minute=45)
 
         updater.start_polling()
         print("[+] BOT has started")
